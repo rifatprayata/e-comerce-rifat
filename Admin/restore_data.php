@@ -1,0 +1,640 @@
+<?php
+// Include konfigurasi database
+require_once '../config.php';
+
+// Cek login dan start session
+cekLogin();
+
+// Ambil koneksi
+$koneksi = getKoneksi();
+
+// === PROSES RESTORE ===
+$message = "";
+$error = "";
+
+if (isset($_POST['restore'])) {
+    // Cek file upload
+    if (!isset($_FILES['sql_file']) || $_FILES['sql_file']['error'] != 0) {
+        $error = "❌ File tidak ditemukan atau upload gagal!";
+    } else {
+        $file = $_FILES['sql_file'];
+        $allowed = ['sql'];
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        
+        if (!in_array($ext, $allowed)) {
+            $error = "❌ Format file harus .sql!";
+        } else {
+            // Baca file SQL
+            $sql_content = file_get_contents($file['tmp_name']);
+            
+            if ($sql_content === false) {
+                $error = "❌ Gagal membaca file!";
+            } else {
+                // Eksekusi SQL
+                $queries = array_filter(array_map('trim', explode(';', $sql_content)));
+                
+                $success = 0;
+                $failed = 0;
+                
+                foreach ($queries as $query) {
+                    if (!empty($query) && strpos($query, '--') !== 0) {
+                        if (mysqli_query($koneksi, $query)) {
+                            $success++;
+                        } else {
+                            $failed++;
+                        }
+                    }
+                }
+                
+                if ($failed == 0) {
+                    $message = "✅ Restore berhasil! $success query dieksekusi.";
+                } else {
+                    $error = "⚠️ Restore sebagian berhasil. $success sukses, $failed gagal.";
+                }
+            }
+        }
+    }
+}
+
+// === AMBIL INFO DATABASE ===
+$db_info = mysqli_fetch_assoc(mysqli_query($koneksi, "
+    SELECT 
+        table_schema as database_name,
+        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) as size_mb,
+        COUNT(*) as total_tables
+    FROM information_schema.tables 
+    WHERE table_schema = '" . DB_NAME . "'
+"));
+
+// Hitung total records
+$total_records = 0;
+$tables_list = [];
+$result = mysqli_query($koneksi, 'SHOW TABLES');
+while ($row = mysqli_fetch_row($result)) {
+    $table = $row[0];
+    $count = mysqli_fetch_assoc(mysqli_query($koneksi, "SELECT COUNT(*) as total FROM `$table`"))['total'];
+    $total_records += $count;
+    $tables_list[] = [
+        'name' => $table,
+        'records' => $count
+    ];
+}
+?>
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Restore Data - Admin Panel</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', Arial, sans-serif; background: #f5f5f5; color: #333; }
+        
+        .main-container { display: flex; min-height: 100vh; }
+        
+        /* SIDEBAR - SAMA DENGAN DASHBOARD.PHP */
+        .sidebar {
+            width: 260px;
+            background: linear-gradient(180deg, #9CAF88 0%, #8A9B76 100%);
+            padding: 25px 20px;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            text-align: center;
+            padding: 15px 0;
+            margin-bottom: 25px;
+            border-bottom: 2px solid rgba(255,255,255,0.3);
+        }
+
+        .sidebar-title {
+            color: white;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .menu-item {
+            background-color: rgba(255,255,255,0.9);
+            padding: 14px 18px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            text-align: left;
+            cursor: pointer;
+            font-weight: 500;
+            color: #333;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .menu-item:hover {
+            background-color: white;
+            transform: translateX(4px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .menu-item.active {
+            background-color: white;
+            color: #9CAF88;
+            font-weight: 700;
+            border-left: 4px solid #9CAF88;
+        }
+
+        .menu-item svg {
+            width: 18px;
+            height: 18px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+        }
+
+        .logout-section {
+            margin-top: auto;
+            padding-top: 20px;
+            border-top: 2px solid rgba(255,255,255,0.3);
+        }
+
+        .logout-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 18px;
+            background-color: rgba(255,255,255,0.2);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            text-decoration: none;
+            transition: background-color 0.2s;
+        }
+
+        .logout-btn:hover {
+            background-color: rgba(255,255,255,0.3);
+        }
+
+        .logout-btn svg {
+            width: 18px;
+            height: 18px;
+            stroke: white;
+            fill: none;
+            stroke-width: 2;
+        }
+        
+        /* MAIN CONTENT */
+        .main-content { 
+            flex: 1; 
+            margin-left: 260px; 
+            padding: 30px; 
+            background: #fff; 
+            min-height: 100vh; 
+        }
+        .page-title { 
+            font-size: 24px; 
+            font-weight: 700; 
+            color: #000; 
+            margin-bottom: 10px; 
+        }
+        .page-subtitle {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .divider { 
+            width: 100%; 
+            height: 5px; 
+            background: #9CAF88; 
+            margin: 0 0 30px 0; 
+            border-radius: 2px;
+        }
+        
+        /* INFO CARDS */
+        .info-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .info-card {
+            background: #E0E0E0;
+            padding: 25px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        
+        .info-card-icon {
+            width: 50px;
+            height: 50px;
+            background: #9CAF88;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 15px;
+        }
+        
+        .info-card-icon svg {
+            width: 24px;
+            height: 24px;
+            stroke: white;
+            fill: none;
+            stroke-width: 2;
+        }
+        
+        .info-card-label {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+        
+        .info-card-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #9CAF88;
+        }
+        
+        /* RESTORE BOX */
+        .restore-box {
+            background: #f9f9f9;
+            border: 2px dashed #9CAF88;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .restore-box-icon {
+            width: 80px;
+            height: 80px;
+            background: #9CAF88;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+        }
+        
+        .restore-box-icon svg {
+            width: 40px;
+            height: 40px;
+            stroke: white;
+            fill: none;
+            stroke-width: 2;
+        }
+        
+        .restore-box-title {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        
+        .restore-box-desc {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 25px;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .file-upload {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .file-input-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+        }
+        
+        .file-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+        }
+        
+        .file-input:hover {
+            border-color: #9CAF88;
+        }
+        
+        .btn-restore {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px 35px;
+            background: #9CAF88;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        
+        .btn-restore:hover {
+            background: #7F8F6B;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(156,175,136,0.4);
+        }
+        
+        .btn-restore svg {
+            width: 20px;
+            height: 20px;
+            stroke: white;
+            fill: none;
+            stroke-width: 2;
+        }
+        
+        /* WARNING BOX */
+        .warning-box {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .warning-box-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 16px;
+            font-weight: 700;
+            color: #856404;
+            margin-bottom: 10px;
+        }
+        
+        .warning-box-title svg {
+            width: 20px;
+            height: 20px;
+            stroke: #856404;
+            fill: none;
+            stroke-width: 2;
+        }
+        
+        .warning-box-list {
+            list-style: none;
+            padding-left: 30px;
+        }
+        
+        .warning-box-list li {
+            font-size: 14px;
+            color: #856404;
+            margin-bottom: 8px;
+            position: relative;
+        }
+        
+        .warning-box-list li::before {
+            content: "⚠️";
+            position: absolute;
+            left: -25px;
+        }
+        
+        /* TABLES LIST */
+        .tables-section {
+            background: #f9f9f9;
+            border-radius: 12px;
+            padding: 25px;
+            margin-top: 30px;
+        }
+        
+        .tables-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .table-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        
+        .table-item {
+            background: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-left: 4px solid #9CAF88;
+        }
+        
+        .table-name {
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .table-records {
+            font-size: 13px;
+            color: #888;
+        }
+        
+        /* MESSAGE */
+        .message { 
+            padding: 12px 18px; 
+            border-radius: 8px; 
+            margin-bottom: 20px; 
+            font-size: 14px; 
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .message.success { 
+            background: #d4edda; 
+            color: #155724; 
+            border: 1px solid #c3e6cb; 
+        }
+        .message.error { 
+            background: #f8d7da; 
+            color: #721c24; 
+            border: 1px solid #f5c6cb; 
+        }
+        .message.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        /* Responsive */
+        @media (max-width: 992px) {
+            .sidebar { width: 220px; }
+            .main-content { margin-left: 220px; }
+        }
+        @media (max-width: 768px) {
+            .main-container { flex-direction: column; }
+            .sidebar { width: 100%; height: auto; position: relative; }
+            .main-content { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+<div class="main-container">
+    <!-- SIDEBAR -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1 class="sidebar-title">Admin Panel</h1>
+        </div>
+
+        <a href="dashboard.php" class="menu-item">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            Dashboard
+        </a>
+        <a href="kelola_data_user.php" class="menu-item">
+            <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            Kelola Data User
+        </a>
+        <a href="kelola_data_produk.php" class="menu-item">
+            <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+            Kelola Data Produk
+        </a>
+        <a href="kelola_data_transaksi.php" class="menu-item">
+            <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+            Kelola Data Transaksi
+        </a>
+        <a href="laporan.php" class="menu-item">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            Laporan
+        </a>
+        <a href="backup_data.php" class="menu-item">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            Backup Data
+        </a>
+        <a href="restore_data.php" class="menu-item active">
+            <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><polyline points="23 20 23 14 17 14"></polyline><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path></svg>
+            Restore Data
+        </a>
+
+        <div class="logout-section">
+            <a href="../auth/logout.php" class="logout-btn">
+                <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                Logout
+            </a>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div class="main-content">
+        <h2 class="page-title">Restore Data</h2>
+        <p class="page-subtitle">Restore database dari file backup .sql</p>
+        <div class="divider"></div>
+        
+        <?php if (!empty($message)): ?>
+            <div class="message success">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                <?= $message ?>
+            </div>
+        <?php endif; ?>
+        <?php if (!empty($error)): ?>
+            <div class="message error">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                <?= $error ?>
+            </div>
+        <?php endif; ?>
+        
+        <!-- Warning Box -->
+        <div class="warning-box">
+            <div class="warning-box-title">
+                <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                ⚠️ Peringatan Penting
+            </div>
+            <ul class="warning-box-list">
+                <li>Restore akan menimpa semua data yang ada di database</li>
+                <li>Pastikan file backup berasal dari sumber yang terpercaya</li>
+                <li>Lakukan backup terlebih dahulu sebelum restore</li>
+                <li>Proses ini tidak dapat dibatalkan</li>
+            </ul>
+        </div>
+        
+        <!-- Info Cards -->
+        <div class="info-cards">
+            <div class="info-card">
+                <div class="info-card-icon">
+                    <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                </div>
+                <div class="info-card-label">Database</div>
+                <div class="info-card-value"><?= DB_NAME ?></div>
+            </div>
+            <div class="info-card">
+                <div class="info-card-icon">
+                    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                </div>
+                <div class="info-card-label">Total Tabel</div>
+                <div class="info-card-value"><?= $db_info['total_tables'] ?? 0 ?></div>
+            </div>
+            <div class="info-card">
+                <div class="info-card-icon">
+                    <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                </div>
+                <div class="info-card-label">Total Record</div>
+                <div class="info-card-value"><?= number_format($total_records, 0, ',', '.') ?></div>
+            </div>
+            <div class="info-card">
+                <div class="info-card-icon">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                </div>
+                <div class="info-card-label">Ukuran Database</div>
+                <div class="info-card-value"><?= $db_info['size_mb'] ?? 0 ?> MB</div>
+            </div>
+        </div>
+        
+        <!-- Restore Box -->
+        <div class="restore-box">
+            <div class="restore-box-icon">
+                <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><polyline points="23 20 23 14 17 14"></polyline><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path></svg>
+            </div>
+            <h3 class="restore-box-title">Restore Database</h3>
+            <p class="restore-box-desc">
+                Upload file backup .sql untuk mengembalikan data database. 
+                Pastikan file backup valid dan berasal dari sumber terpercaya.
+            </p>
+            <form method="POST" enctype="multipart/form-data" class="file-upload" onsubmit="return confirm('⚠️ Yakin ingin restore? Semua data akan ditimpa!')">
+                <div class="file-input-wrapper">
+                    <input type="file" name="sql_file" class="file-input" accept=".sql" required>
+                </div>
+                <button type="submit" name="restore" class="btn-restore">
+                    <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><polyline points="23 20 23 14 17 14"></polyline><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path></svg>
+                    Restore Database
+                </button>
+            </form>
+        </div>
+        
+        <!-- Tables List -->
+        <div class="tables-section">
+            <h3 class="tables-title">📋 Tabel yang akan di-restore</h3>
+            <div class="table-list">
+                <?php foreach ($tables_list as $table): ?>
+                <div class="table-item">
+                    <span class="table-name"><?= htmlspecialchars($table['name']) ?></span>
+                    <span class="table-records"><?= number_format($table['records'], 0, ',', '.') ?> records</span>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+</html>
